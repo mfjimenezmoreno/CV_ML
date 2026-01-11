@@ -9,7 +9,7 @@ services:
     volumes:
       - .:/workspace
     ports:
-      - "8888:8888"
+      - "8889:8888"
     environment:
       - PYTHONUNBUFFERED=1
     working_dir: /workspace

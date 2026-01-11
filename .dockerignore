@@ -34,7 +34,6 @@ Thumbs.db
 # Output files
 *.png
 *.csv
-*.txt
 cv_results.csv
 cv_summary.txt
 cyclic_voltammogram.png
