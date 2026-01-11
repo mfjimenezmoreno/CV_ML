@@ -19,7 +19,10 @@
         "python.linting.pylintEnabled": false,
         "python.formatting.provider": "black",
         "editor.formatOnSave": true,
-        "jupyter.jupyterServerType": "local"
+        "jupyter.jupyterServerType": "local",
+        "github.copilot.advanced": {
+          "mcp.enabled": false
+        }
       }
     }
   },
