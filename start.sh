@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Quick start script for DOLFINx CV/ML environment
 
 set -e
