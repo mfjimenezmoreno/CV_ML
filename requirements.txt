@@ -11,3 +11,6 @@ seaborn>=0.12.0
 
 # Scientific computing
 scipy>=1.10.0
+
+# Jupyter notebook support
+ipykernel
