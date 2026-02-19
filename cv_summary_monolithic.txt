@@ -1,0 +1,14 @@
+CYCLIC VOLTAMMETRY — MONOLITHIC SOLVER SUMMARY
+============================================================
+
+Anodic peak current:     1527.150 μA
+Cathodic peak current:   -466.618 μA
+Anodic peak potential:   -0.498 V
+Cathodic peak potential: 0.044 V
+Peak separation:         -0.542 V
+Midpoint potential:      -0.227 V
+Peak current ratio:      3.273
+
+D_O: 1e-09 m²/s
+D_R: 3e-09 m²/s
+Scan rate: 0.05 V/s

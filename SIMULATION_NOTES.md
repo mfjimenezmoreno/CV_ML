@@ -150,3 +150,44 @@ If results look wrong in the future, check:
 3. **$\Delta E_p$ reasonable?** — For $k_0 = 0.1$ m/s (fast kinetics), expect near-Nernstian: ~59/n mV
 4. **$|i_{pa}/i_{pc}| \approx 1$?** — For equal bulk concentrations and equal D
 5. **Sign convention consistent?** — Check whether plots match US or IUPAC expectations
+
+---
+
+## Notebook Inventory
+
+| File | Approach | When to use |
+|------|----------|-------------|
+| `cyclic_voltammetry_demo.ipynb` | Single-species ($C_R = C_{total} - C_O$) | $D_O = D_R$ — fast, simple, exact conservation by construction |
+| `cyclic_voltammetry_monolithic.ipynb` | Monolithic mixed FE (coupled Newton) | **General case**: $D_O \neq D_R$, or when you want the full formulation |
+
+### Monolithic approach — key ideas
+
+The monolithic notebook uses a **mixed function space** `W = V × V` so that
+`(C_O, C_R)` are solved **simultaneously** in a single Newton system:
+
+```python
+# Mixed element
+elem = basix.ufl.element("Lagrange", "interval", 1)
+mel = basix.ufl.mixed_element([elem, elem])
+W = fem.functionspace(domain, mel)
+
+# Single combined solution
+u = fem.Function(W)
+C_O, C_R = ufl.split(u)
+
+# Single combined residual
+F = (O_equation_terms) + (R_equation_terms)  # one form, two species
+
+# One Newton solve per time step
+problem = NonlinearProblem(F, u, bcs=[bc_O, bc_R])
+solver = NewtonSolver(MPI.COMM_WORLD, problem)
+```
+
+**Why this works:** Newton sees the full Jacobian including cross-derivatives
+$\partial F_O / \partial C_R$ and $\partial F_R / \partial C_O$ from the shared
+$J_{BV}$ term. Both species are updated simultaneously — no splitting error,
+no Picard lag, no conservation assumption.
+
+**Trade-off:** The linear system is 2× larger (2N DOFs vs N), but with a direct
+LU solver this is negligible for 1D problems. For 2D/3D, consider iterative
+solvers with block preconditioners.
