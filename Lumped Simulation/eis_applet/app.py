@@ -39,7 +39,7 @@ SLIDER_DEFS = [
     # (id, label, min, max, default, step, unit, group)
     ("r_pore", "r_pore", 0.5, 2.5, 1.5, 0.1, "µm", "Geometry"),
     ("pitch", "pitch", 5, 50, 20, 1, "µm", "Geometry"),
-    ("t_tox", "t_tox", 50, 1000, 500, 10, "nm", "Geometry"),
+    ("t_tox", "t_tox", 5, 1000, 500, 1, "nm", "Geometry"),
     ("t_eox", "t_eox", 100, 800, 400, 10, "nm", "Geometry"),
     ("I_mM", "I (ionic str.)", 1, 150, 10, 1, "mM", "Electrolyte"),
     ("T_K", "T", 273, 320, 298, 1, "K", "Electrolyte"),
@@ -47,6 +47,7 @@ SLIDER_DEFS = [
     ("c_DNA", "c_DNA", 0, 1, 0, 0.01, "—", "DNA signal"),
     ("N_total", "N_total", 10, 500, 100, 10, "—", "Array"),
     ("f_open", "f_open", 0.05, 1.0, 0.7, 0.05, "—", "Array"),
+    ("V_dc", "V_dc (bias)", -0.6, 1.2, 0.0, 0.01, "V", "Bias"),
 ]
 
 
@@ -109,7 +110,18 @@ app.layout = html.Div([
         "background": "#2c3e50", "padding": "14px 24px",
         "marginBottom": "16px", "borderRadius": "4px",
     }),
-
+    # V_dc electrolysis warning (hidden by default)
+    html.Div(
+        id="vdc-warning",
+        children="⚠ Approaching faradaic window — electrolysis risk",
+        style={
+            "display": "none",
+            "background": "#e74c3c", "color": "#fff",
+            "padding": "8px 16px", "borderRadius": "4px",
+            "fontWeight": "bold", "fontSize": "13px",
+            "marginBottom": "8px", "marginLeft": "16px", "marginRight": "16px",
+        },
+    ),
     # Main grid: sliders | plots
     html.Div([
         # Left panel — sliders + derived values
@@ -133,14 +145,20 @@ app.layout = html.Div([
             "maxHeight": "92vh",
         }),
 
-        # Right panel — plots
+        # Right panel — plots in two columns: Bode on the left, Nyquist stacked on the right
         html.Div([
-            dcc.Graph(id="bode-plot", style={"height": "44vh"}),
+            # Left column: taller Bode plot
             html.Div([
-                dcc.Graph(id="nyquist-raw", style={"height": "42vh", "width": "50%"}),
-                dcc.Graph(id="nyquist-sub", style={"height": "42vh", "width": "50%"}),
-            ], style={"display": "flex"}),
-        ], style={"flex": "1", "minWidth": "0"}),
+                dcc.Graph(id="bode-plot", style={"height": "88vh"}),
+            ], style={"width": "50%", "paddingRight": "12px", "boxSizing": "border-box"}),
+
+            # Right column: two Nyquist plots stacked vertically
+            html.Div([
+                dcc.Graph(id="nyquist-raw", style={"height": "44vh"}),
+                dcc.Graph(id="nyquist-sub", style={"height": "44vh"}),
+            ], style={"width": "50%", "display": "flex", "flexDirection": "column", "gap": "8px", "boxSizing": "border-box"}),
+
+        ], style={"display": "flex", "flex": "1", "minWidth": "0"}),
 
     ], style={"display": "flex", "padding": "0 16px"}),
 
@@ -158,6 +176,7 @@ SLIDER_INPUTS = [Input(sid, "value") for sid, *_ in SLIDER_DEFS]
     Output("nyquist-raw", "figure"),
     Output("nyquist-sub", "figure"),
     Output("derived-values", "children"),
+    Output("vdc-warning", "style"),
     *[Output(f"{sid}-label", "children") for sid, *_ in SLIDER_DEFS],
     SLIDER_INPUTS,
 )
@@ -173,7 +192,7 @@ def update_all(*slider_values):
                   *slider_labels).
     """
     # Unpack slider values
-    r_pore, pitch, t_tox, t_eox, I_mM, T_K, sigma_DNA, c_DNA, N_total, f_open = slider_values
+    r_pore, pitch, t_tox, t_eox, I_mM, T_K, sigma_DNA, c_DNA, N_total, f_open, V_dc = slider_values
 
     # Build params
     params = DeviceParams(
@@ -187,6 +206,7 @@ def update_all(*slider_values):
         c_DNA=c_DNA,
         N_total=int(N_total),
         f_open=f_open,
+        V_dc_V=V_dc,
     )
 
     # Run sweep
@@ -338,8 +358,19 @@ def update_all(*slider_values):
             html.Tr([html.Td("N_open"), html.Td(str(comp.N_open))]),
             html.Tr([html.Td("f_lateral"), html.Td(format_eng(comp.f_lateral, "Hz"))]),
             html.Tr([html.Td("f_RC_pore"), html.Td(format_eng(comp.f_RC_pore, "Hz"))]),
+            html.Tr([html.Td("V_dc"), html.Td(f"{comp.V_dc_V:.2f} V")]),
+            html.Tr([html.Td("Oxide regime"), html.Td(comp.oxide_regime)]),
         ], style={"width": "100%", "borderCollapse": "collapse"}),
     ])
+
+    # === V_dc WARNING ===
+    _warn_style = {
+        "background": "#e74c3c", "color": "#fff",
+        "padding": "8px 16px", "borderRadius": "4px",
+        "fontWeight": "bold", "fontSize": "13px",
+        "marginBottom": "8px", "marginLeft": "16px", "marginRight": "16px",
+    }
+    _warn_style["display"] = "block" if abs(V_dc) > 0.6 else "none"
 
     # === SLIDER LABELS ===
     labels = []
@@ -348,7 +379,7 @@ def update_all(*slider_values):
         val = slider_values[idx]
         labels.append(f"{label} = {val} {unit}")
 
-    return (bode_fig, nyq_raw, nyq_sub, derived, *labels)
+    return (bode_fig, nyq_raw, nyq_sub, derived, _warn_style, *labels)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,16 @@ EPS_ESIO2 = 3.7           # evaporated SiO₂
 EPS_PR = 3.5              # photoresist
 EPS_DNA = 8.0             # DNA dielectric constant
 
+# Oxide conduction parameters (SiO₂)
+PHI_B_SIO2 = 3.1                        # eV     barrier height SiO₂→Si
+ALPHA_FN = 1.54e-6                       # A/V²   Fowler-Nordheim prefactor
+BETA_FN = 2.35e10                        # V/m    FN exponential constant
+M_EFF_SIO2 = 0.42 * 9.1093837015e-31    # kg     effective electron mass in SiO₂
+Q_ELECTRON = 1.602176634e-19             # C      electron charge
+HBAR = 1.054571817e-34                   # J·s    reduced Planck constant
+KAPPA_DT = np.sqrt(2 * M_EFF_SIO2 * PHI_B_SIO2 * Q_ELECTRON) / HBAR  # m⁻¹
+T_OX_DT_LIMIT = 4e-9                    # m      direct-tunnelling thickness limit
+
 
 @dataclass
 class DeviceParams:
@@ -40,7 +50,8 @@ class DeviceParams:
     Args:
         r_pore_um: Pore radius in micrometres (0.5–2.5 µm).
         pitch_um: Unit cell pitch in micrometres (5–50 µm).
-        t_tox_nm: Thermal oxide thickness in nanometres (50–1000 nm).
+        t_tox_nm: Thermal oxide thickness in nanometres (5–1000 nm).
+                  5–4 nm: direct tunnelling regime; 5–25 nm: Fowler-Nordheim regime at max V_dc.
         t_eox_nm: Evaporated oxide thickness in nanometres (100–800 nm).
         I_mM: Ionic strength in millimolar (1–150 mM).
         T_K: Temperature in kelvin (273–320 K).
@@ -48,6 +59,7 @@ class DeviceParams:
         c_DNA: DNA fractional coverage of Debye layer (0–1, dimensionless).
         N_total: Total number of pores in the array (10–500).
         f_open: Fraction of pores that are open (0.05–1.0).
+        V_dc_V: DC bias voltage in volts (−0.6 – +1.2 V).
     """
     r_pore_um: float = 1.5
     pitch_um: float = 20.0
@@ -59,6 +71,7 @@ class DeviceParams:
     c_DNA: float = 0.0
     N_total: int = 100
     f_open: float = 0.7
+    V_dc_V: float = 0.0
 
 
 @dataclass
@@ -110,6 +123,10 @@ class DerivedComponents:
 
     # Photoresist thickness (for closed pores)
     t_PR_m: float = 0.0
+
+    # DC bias
+    V_dc_V: float = 0.0
+    oxide_regime: str = "Capacitive"
 
 
 def derive_components(params: DeviceParams) -> DerivedComponents:
@@ -196,6 +213,18 @@ def derive_components(params: DeviceParams) -> DerivedComponents:
     else:
         c.f_RC_pore = np.inf
 
+    # --- DC bias & oxide conduction regime ---
+    c.V_dc_V = params.V_dc_V
+    c.oxide_regime = oxide_regime_label(c.t_tox_m, params.V_dc_V)
+
+    # Voltage-dependent double layer (Gouy-Chapman with V_dc contribution)
+    if abs(params.V_dc_V) > 1e-9 and c.C_tox_pore > 0 and c.C_dl_SiO2 > 0:
+        V_dl = params.V_dc_V * c.C_tox_pore / (c.C_tox_pore + c.C_dl_SiO2)
+        phi_eff = c.phi_s_V + V_dl
+        c.C_dl_SiO2 = c.C_dl_SiO2_0 * np.cosh(
+            F_CONST * phi_eff / (2.0 * R_GAS * T)
+        )
+
     return c
 
 
@@ -238,6 +267,82 @@ def _cap_impedance(C: float, omega: float) -> complex:
     return 1.0 / (1j * omega * C)
 
 
+def oxide_regime_label(t_ox_m: float, V_dc_V: float) -> str:
+    """
+    Return a human-readable label for the oxide conduction regime.
+
+    Args:
+        t_ox_m: Oxide thickness in metres.
+        V_dc_V: DC bias voltage in volts.
+
+    Returns:
+        One of 'Capacitive', 'Fowler-Nordheim', or 'Direct tunnelling'.
+    """
+    V = abs(V_dc_V)
+    if V < 1e-9:
+        return "Capacitive"
+    if t_ox_m <= T_OX_DT_LIMIT:
+        return "Direct tunnelling"
+    E_ox = V / t_ox_m
+    exp_arg = BETA_FN / E_ox
+    if exp_arg < 50:
+        return "Fowler-Nordheim"
+    return "Capacitive"
+
+
+def Z_oxide(t_ox_m: float, A_m2: float, eps_r: float,
+            V_dc_V: float, omega: float) -> complex:
+    """
+    Oxide impedance with automatic conduction-regime selection.
+
+    Selects between:
+      - Capacitive (thick oxide, low field)
+      - Fowler-Nordheim tunnelling (t_ox > 4 nm, high field)
+      - Direct tunnelling (t_ox ≤ 4 nm)
+
+    Returns Z_cap ∥ R_leak.
+
+    Args:
+        t_ox_m:  Oxide thickness [m].
+        A_m2:    Oxide area [m²].
+        eps_r:   Relative permittivity of the oxide.
+        V_dc_V:  DC voltage across the oxide [V].
+        omega:   Angular frequency [rad/s].
+
+    Returns:
+        Complex impedance of the oxide layer.
+    """
+    C_ox = EPS0 * eps_r * A_m2 / t_ox_m
+    Z_cap = _cap_impedance(C_ox, omega)
+
+    V = abs(V_dc_V)
+    if V < 1e-9:
+        return Z_cap  # no DC bias → pure capacitive
+
+    E_ox = V / t_ox_m
+
+    if t_ox_m <= T_OX_DT_LIMIT:
+        # Direct tunnelling (Simmons-like WKB)
+        v_ratio = min(V / PHI_B_SIO2, 0.999)
+        exp_arg = 2.0 * KAPPA_DT * t_ox_m * np.sqrt(1.0 - v_ratio)
+    else:
+        # Fowler-Nordheim tunnelling
+        exp_arg = BETA_FN / E_ox
+
+    if exp_arg > 500:
+        return Z_cap  # negligible leakage
+
+    J_leak = ALPHA_FN * E_ox ** 2 * np.exp(-exp_arg)
+    I_leak = J_leak * A_m2
+
+    if I_leak < 1e-30:
+        return Z_cap
+
+    R_leak = V / I_leak
+    # Parallel combination: Z_cap ∥ R_leak
+    return (Z_cap * R_leak) / (Z_cap + R_leak)
+
+
 def calc_Z_path1(omega: float, comp: DerivedComponents) -> complex:
     """
     Path 1 — Field solid (spurious background).
@@ -257,8 +362,8 @@ def calc_Z_path1(omega: float, comp: DerivedComponents) -> complex:
         so series is dominated by t-SiO₂. Scales with A_field.
     """
     Z_dl = _cap_impedance(comp.C_dl_Au, omega)
-    Z_eox = _cap_impedance(comp.C_eox_field, omega)
-    Z_tox = _cap_impedance(comp.C_tox_field, omega)
+    Z_eox = Z_oxide(comp.t_eox_m, comp.A_field_m2, EPS_ESIO2, comp.V_dc_V, omega)
+    Z_tox = Z_oxide(comp.t_tox_m, comp.A_field_m2, EPS_TSIO2, comp.V_dc_V, omega)
     return _series_impedance(Z_dl, Z_eox, Z_tox)
 
 
@@ -290,7 +395,7 @@ def calc_Z_path2_single(omega: float, comp: DerivedComponents) -> complex:
     Z_R = comp.R_access + 0j
     Z_dl_sio2 = _cap_impedance(comp.C_dl_SiO2, omega)
     Z_dna = _cap_impedance(comp.C_DNA_layer, omega)
-    Z_tox = _cap_impedance(comp.C_tox_pore, omega)
+    Z_tox = Z_oxide(comp.t_tox_m, comp.A_pore_m2, EPS_TSIO2, comp.V_dc_V, omega)
 
     return _series_impedance(Z_dl_rim, Z_R, Z_dl_sio2, Z_dna, Z_tox)
 
@@ -314,7 +419,7 @@ def calc_Z_path3_single(omega: float, comp: DerivedComponents) -> complex:
         invisible. Included for completeness.
     """
     Z_pr = _cap_impedance(comp.C_PR, omega)
-    Z_tox = _cap_impedance(comp.C_tox_pore, omega)
+    Z_tox = Z_oxide(comp.t_tox_m, comp.A_pore_m2, EPS_TSIO2, comp.V_dc_V, omega)
     return _series_impedance(Z_pr, Z_tox)
 
 
