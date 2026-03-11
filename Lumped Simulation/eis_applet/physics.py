@@ -31,15 +31,31 @@ EPS_ESIO2 = 3.7           # evaporated SiO₂
 EPS_PR = 3.5              # photoresist
 EPS_DNA = 8.0             # DNA dielectric constant
 
+# Electrolyte molar conductivity (NaCl-like, 25 °C)
+# Combined limiting molar conductivities: λ_Na⁺=50.1, λ_Cl⁻=76.4 mS·cm²/mmol
+# Λ_m = 126.5×10⁻⁴ S·m²/mol  →  σ = Λ_m × c  (c in mol/m³)
+# For KCl: Λ_m ≈ 149.9×10⁻⁴.  Value here is for NaCl/typical monovalent salt.
+LAMBDA_MOLAR = 126.4e-4                 # S·m²/mol  molar conductivity (NaCl, 25 °C)
+
 # Oxide conduction parameters (SiO₂)
 PHI_B_SIO2 = 3.1                        # eV     barrier height SiO₂→Si
-ALPHA_FN = 1.54e-6                       # A/V²   Fowler-Nordheim prefactor
-BETA_FN = 2.35e10                        # V/m    FN exponential constant
+# ALPHA_FN: empirical Lenzlinger-Snow prefactor for SiO₂/Si, NOT derivable from
+# first principles alone — incorporates image-force barrier lowering and
+# oxide-specific corrections.  Standard literature value: 1.54×10⁻⁶ A/V².
+ALPHA_FN = 1.54e-6                       # A/V²   Fowler-Nordheim prefactor (empirical)
+# BETA_FN: from B = (4/3)√(2m*)Φ_B^(3/2)/(qħ) = 2.416×10¹⁰ V/m;
+# code uses 2.35×10¹⁰ (2.7 % low, within literature spread for SiO₂).
+BETA_FN = 2.35e10                        # V/m    FN exponential constant (≈ empirical)
 M_EFF_SIO2 = 0.42 * 9.1093837015e-31    # kg     effective electron mass in SiO₂
 Q_ELECTRON = 1.602176634e-19             # C      electron charge
-HBAR = 1.054571817e-34                   # J·s    reduced Planck constant
+HBAR = 1.054571817e-34                   # J·s    reduced Planck constant (ħ)
+# κ = √(2m*Φ_B·q)/ħ ≈ 5.85 nm⁻¹  (accepted range 5–8 nm⁻¹ for SiO₂ with 0.42m₀)
 KAPPA_DT = np.sqrt(2 * M_EFF_SIO2 * PHI_B_SIO2 * Q_ELECTRON) / HBAR  # m⁻¹
-T_OX_DT_LIMIT = 4e-9                    # m      direct-tunnelling thickness limit
+T_OX_DT_LIMIT = 4e-9                    # m      direct-tunnelling thickness limit (~4 nm for SiO₂)
+# NOTE on FN reachability: the FN regime (exp_arg < 50) requires E_ox > 4.7×10⁸ V/m.
+# At the UI slider maximum (V_dc = 1.2 V, t_tox ≥ 5 nm → E_max = 2.4×10⁸ V/m),
+# the FN branch never triggers.  The only sub-capacitive regime accessible in
+# the slider range is Direct Tunnelling when t_tox ≤ 4 nm.
 
 
 @dataclass
@@ -50,8 +66,10 @@ class DeviceParams:
     Args:
         r_pore_um: Pore radius in micrometres (0.5–2.5 µm).
         pitch_um: Unit cell pitch in micrometres (5–50 µm).
-        t_tox_nm: Thermal oxide thickness in nanometres (5–1000 nm).
-                  5–4 nm: direct tunnelling regime; 5–25 nm: Fowler-Nordheim regime at max V_dc.
+        t_tox_nm: Thermal oxide thickness in nanometres (1–1000 nm).
+                  ≤4 nm: direct tunnelling regime (Simmons WKB).
+                  >4 nm at slider max V_dc = 1.2 V: still capacitive (FN threshold ~4.7×10⁸ V/m
+                  requires t_ox ≤ ~2.5 nm at 1.2 V — not accessible in DT range either).
         t_eox_nm: Evaporated oxide thickness in nanometres (100–800 nm).
         I_mM: Ionic strength in millimolar (1–150 mM).
         T_K: Temperature in kelvin (273–320 K).
@@ -166,8 +184,11 @@ def derive_components(params: DeviceParams) -> DerivedComponents:
     c.lambda_D_m = np.sqrt(
         EPS0 * EPS_W * R_GAS * T / (2.0 * F_CONST ** 2 * c.I_molm3)
     )
-    # Empirical resistivity: ρ ≈ 0.1 / √(I_mM / 10)  [Ω·m]
-    c.rho_elec = 0.1 / np.sqrt(params.I_mM / 10.0)
+    # Bulk resistivity from molar conductivity: σ = Λ_m × c  →  ρ = 1/(Λ_m·c)
+    # Temperature correction: ρ ∝ η(T) ≈ η(T_ref)·(T_ref/T)  (viscosity ≈ linear in T)
+    # Λ_m has mild √I correction (Kohlrausch) but linear in c dominates for I < 0.3 M.
+    T_REF = 298.0  # K
+    c.rho_elec = (T_REF / T) / (LAMBDA_MOLAR * c.I_molm3)
     c.R_access = c.rho_elec / (4.0 * c.r_pore_m)
 
     # --- Capacitors (parallel-plate) ---
@@ -322,17 +343,27 @@ def Z_oxide(t_ox_m: float, A_m2: float, eps_r: float,
     E_ox = V / t_ox_m
 
     if t_ox_m <= T_OX_DT_LIMIT:
-        # Direct tunnelling (Simmons-like WKB)
-        v_ratio = min(V / PHI_B_SIO2, 0.999)
+        # Direct tunnelling — Simmons (1963) WKB model.
+        # Trapezoidal-barrier approximation: barrier height reduced by V/2 on each side.
+        # Exponent: 2κ·t·√(1 − V/Φ_B)  (dimensionless; V and Φ_B both in volts/eV).
+        # Prefactor from Simmons (SI): J₀ = q / (4π²ħ·t²)  [A·m⁻²·J⁻¹]
+        #   J = J₀ × Φ_B[J] × exp(-exponent)  →  units: A/m²
+        # NOTE: the FN prefactor (ALPHA_FN × E²) has a fundamentally different
+        # field-dependence and is NOT valid for the DT regime.
+        v_ratio = min(V / PHI_B_SIO2, 0.999)   # V[V] / Phi_B[eV] — dimensionless ✓
         exp_arg = 2.0 * KAPPA_DT * t_ox_m * np.sqrt(1.0 - v_ratio)
+        J0_DT = Q_ELECTRON / (4.0 * np.pi ** 2 * HBAR * t_ox_m ** 2)  # A/(m²·J)
+        J_leak = J0_DT * (PHI_B_SIO2 * Q_ELECTRON) * np.exp(-exp_arg)  # A/m²
     else:
         # Fowler-Nordheim tunnelling
         exp_arg = BETA_FN / E_ox
+        if exp_arg > 500:
+            return Z_cap  # negligible leakage
+        J_leak = ALPHA_FN * E_ox ** 2 * np.exp(-exp_arg)  # A/m²
 
-    if exp_arg > 500:
-        return Z_cap  # negligible leakage
+    if t_ox_m <= T_OX_DT_LIMIT and exp_arg > 500:
+        return Z_cap  # negligible DT leakage
 
-    J_leak = ALPHA_FN * E_ox ** 2 * np.exp(-exp_arg)
     I_leak = J_leak * A_m2
 
     if I_leak < 1e-30:
@@ -443,7 +474,9 @@ def calc_Z_total(omega: float, comp: DerivedComponents) -> complex:
         The instrument measures Z_total.
     """
     # Path 1 — field (one unit cell, but there's one field region)
-    Y1 = 1.0 / calc_Z_path1(omega, comp) if calc_Z_path1(omega, comp) != 0 else 0
+    # Note: compute once to avoid redundant evaluation
+    Z1 = calc_Z_path1(omega, comp)
+    Y1 = 1.0 / Z1 if Z1 != 0 else 0
 
     # Path 2 — open pores (N_open in parallel)
     Z2_single = calc_Z_path2_single(omega, comp)

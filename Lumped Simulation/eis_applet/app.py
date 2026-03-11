@@ -39,8 +39,8 @@ SLIDER_DEFS = [
     # (id, label, min, max, default, step, unit, group)
     ("r_pore", "r_pore", 0.5, 2.5, 1.5, 0.1, "µm", "Geometry"),
     ("pitch", "pitch", 5, 50, 20, 1, "µm", "Geometry"),
-    ("t_tox", "t_tox", 5, 1000, 500, 1, "nm", "Geometry"),
-    ("t_eox", "t_eox", 100, 800, 400, 10, "nm", "Geometry"),
+    ("t_tox", "t_tox", 1, 1000, 500, 1, "nm", "Geometry"),
+    ("t_eox", "t_eox", 10, 800, 400, 10, "nm", "Geometry"),
     ("I_mM", "I (ionic str.)", 1, 150, 10, 1, "mM", "Electrolyte"),
     ("T_K", "T", 273, 320, 298, 1, "K", "Electrolyte"),
     ("sigma_DNA", "σ_DNA", 0, 5, 0, 0.1, "mC/m²", "DNA signal"),
